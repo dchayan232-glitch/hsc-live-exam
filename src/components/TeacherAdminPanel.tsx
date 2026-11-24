@@ -48,6 +48,7 @@ import { PrintExamModal } from './PrintExamModal';
 
 interface TeacherAdminPanelProps {
   teacherToken: string;
+  maxChunkBytes?: number;
   firebaseUser: User | null;
   exams: ExamDocument[];
   onPublishExam: (payload: {
@@ -108,6 +109,7 @@ const SAMPLE_JSON_TEMPLATE = JSON.stringify(
 
 export const TeacherAdminPanel: React.FC<TeacherAdminPanelProps> = ({
   teacherToken,
+  maxChunkBytes,
   firebaseUser,
   exams,
   onPublishExam,
@@ -115,6 +117,13 @@ export const TeacherAdminPanel: React.FC<TeacherAdminPanelProps> = ({
   onDeleteExam,
   onLockPanel,
 }) => {
+  const effectiveMaxChunkBytes =
+    maxChunkBytes && maxChunkBytes > 512 * 1024
+      ? Math.min(maxChunkBytes, MAX_CHUNK_SIZE_BYTES)
+      : MAX_CHUNK_SIZE_BYTES;
+  const effectiveChunkMbLabel = toBanglaDigits(
+    Math.max(1, Math.round(effectiveMaxChunkBytes / (1024 * 1024)))
+  );
   const [activeTab, setActiveTab] = useState<AdminTab>('ai');
   const [authBusy, setAuthBusy] = useState(false);
   const [globalNotice, setGlobalNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(
@@ -295,11 +304,11 @@ export const TeacherAdminPanel: React.FC<TeacherAdminPanelProps> = ({
     setGlobalNotice(null);
 
     try {
-      // Build upload queue: files <= 24 MB upload directly; larger files (up to 250 MB)
-      // are automatically split in the browser via pdf-lib into valid < 25 MB PDF chunks.
+      // Build upload queue: files <= effectiveMaxChunkBytes upload directly; larger files
+      // (up to 250 MB) are automatically split in the browser via pdf-lib into valid PDF chunks.
       let uploadQueue: Array<{ file: File; partNumber: number; totalParts: number }> = [];
 
-      if (file.size <= MAX_CHUNK_SIZE_BYTES) {
+      if (file.size <= effectiveMaxChunkBytes) {
         uploadQueue = [{ file, partNumber: 1, totalParts: 1 }];
       } else {
         setUploadProgress({
@@ -307,12 +316,12 @@ export const TeacherAdminPanel: React.FC<TeacherAdminPanelProps> = ({
           currentPart: 0,
           totalParts: 0,
           percent: 5,
-          detail: `বড় PDF (${formatFileSizeMb(file.size)}) বিশ্লেষণ ও ২৫ MB-এর কম অংশে ভাগ করা হচ্ছে...`,
+          detail: `বড় PDF (${formatFileSizeMb(file.size)}) বিশ্লেষণ ও ${effectiveChunkMbLabel} MB-এর কম অংশে ভাগ করা হচ্ছে...`,
         });
 
         const sourceBytes = new Uint8Array(await file.arrayBuffer());
         const chunks = await splitPdfIntoChunks(sourceBytes, file.name, {
-          maxChunkBytes: MAX_CHUNK_SIZE_BYTES,
+          maxChunkBytes: effectiveMaxChunkBytes,
           onProgress: (p) => {
             if (p.stage === 'splitting' && p.totalPages > 0) {
               const splitPct = Math.max(
@@ -370,27 +379,41 @@ export const TeacherAdminPanel: React.FC<TeacherAdminPanelProps> = ({
           headers: { Authorization: `Bearer ${teacherToken}` },
           body: formData,
         });
-        const data = await res.json();
+        const rawText = await res.text();
+        let data: {
+          storeName?: string | null;
+          displayName?: string;
+          documents?: KnowledgeBaseStatus['documents'];
+          error?: string;
+        } = {};
+        try {
+          data = rawText ? JSON.parse(rawText) : {};
+        } catch {
+          data = {};
+        }
 
         if (!res.ok) {
           const partPrefix =
             totalParts > 1
               ? `অংশ ${toBanglaDigits(item.partNumber)}/${toBanglaDigits(totalParts)} আপলোড ব্যর্থ: `
               : '';
-          throw new Error(`${partPrefix}${data.error || 'PDF আপলোড ব্যর্থ হয়েছে।'}`);
+          throw new Error(
+            `${partPrefix}${data.error || `PDF আপলোড ব্যর্থ হয়েছে (HTTP ${res.status})।`}`
+          );
         }
 
-        latestStoreData = {
-          storeName: data.storeName,
-          displayName: data.displayName,
-          documents: data.documents || [],
+        const storeSnapshot = {
+          storeName: data.storeName ?? null,
+          displayName: data.displayName ?? `hsc-kb-${kbSubject}`,
+          documents: data.documents ?? [],
         };
+        latestStoreData = storeSnapshot;
 
         setKbStatus({
           subject: kbSubject,
-          storeName: latestStoreData.storeName,
-          displayName: latestStoreData.displayName,
-          documents: latestStoreData.documents,
+          storeName: storeSnapshot.storeName,
+          displayName: storeSnapshot.displayName,
+          documents: storeSnapshot.documents,
         });
 
         setUploadProgress({
@@ -776,7 +799,7 @@ export const TeacherAdminPanel: React.FC<TeacherAdminPanelProps> = ({
                         <Loader2 className="h-4.5 w-4.5 animate-spin text-blue-700 shrink-0" aria-hidden="true" />
                         <span>
                           {uploadProgress?.phase === 'splitting'
-                            ? 'বড় PDF স্বয়ংক্রিয়ভাবে ২৫ MB-এর কম অংশে ভাগ হচ্ছে...'
+                            ? `বড় PDF স্বয়ংক্রিয়ভাবে ${effectiveChunkMbLabel} MB-এর কম অংশে ভাগ হচ্ছে...`
                             : uploadProgress && uploadProgress.totalParts > 1
                             ? `Uploading part ${uploadProgress.currentPart} of ${uploadProgress.totalParts}...`
                             : 'PDF আপলোড ও Gemini File Search Store-এ ইনডেক্স হচ্ছে...'}
@@ -818,7 +841,7 @@ export const TeacherAdminPanel: React.FC<TeacherAdminPanelProps> = ({
                         পাঠ্যবই / গাইড PDF আপলোড করতে ক্লিক করুন
                       </span>
                       <span className="mt-1 text-xs text-slate-500">
-                        সর্বোচ্চ ২৫০ MB · বড় PDF স্বয়ংক্রিয়ভাবে ২৫ MB অংশে ভাগ হয়ে আপলোড হবে (.pdf)
+                        সর্বোচ্চ ২৫০ MB · বড় PDF স্বয়ংক্রিয়ভাবে {effectiveChunkMbLabel} MB অংশে ভাগ হয়ে আপলোড হবে (.pdf)
                       </span>
                     </>
                   )}

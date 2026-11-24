@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Lock, ArrowRight, AlertCircle, Shield } from 'lucide-react';
 
 interface TeacherPinGateProps {
-  onUnlock: (token: string) => void;
+  onUnlock: (token: string, maxChunkBytes?: number) => void;
   onCancel: () => void;
 }
 
@@ -27,13 +27,26 @@ export const TeacherPinGate: React.FC<TeacherPinGateProps> = ({ onUnlock, onCanc
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin: cleaned }),
       });
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: { ok?: boolean; token?: string; maxChunkBytes?: number; error?: string } = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        data = {};
+      }
+
       if (!res.ok || !data.token) {
-        setError(data.error || 'ভুল পিন নম্বর! আবার চেষ্টা করুন।');
+        if (res.status === 404) {
+          setError('ব্যাকএন্ড API (/api/teacher/verify-pin) পাওয়া যায়নি। অনুগ্রহ করে অ্যাপটি পুনরায় ডিপ্লয় করুন।');
+        } else if (res.status >= 500 && !data.error) {
+          setError(`সার্ভার ত্রুটি (${res.status})। কিছুক্ষণ পর আবার চেষ্টা করুন।`);
+        } else {
+          setError(data.error || 'ভুল পিন নম্বর! আবার চেষ্টা করুন।');
+        }
         setSubmitting(false);
         return;
       }
-      onUnlock(data.token);
+      onUnlock(data.token, typeof data.maxChunkBytes === 'number' ? data.maxChunkBytes : undefined);
     } catch {
       setError('সার্ভারের সাথে সংযোগ করা যায়নি। পুনরায় চেষ্টা করুন।');
       setSubmitting(false);

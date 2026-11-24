@@ -51,6 +51,7 @@ export default function App() {
 
   // Teacher PIN session token held strictly in React memory (never localStorage)
   const [teacherToken, setTeacherToken] = useState<string | null>(null);
+  const [maxUploadChunkBytes, setMaxUploadChunkBytes] = useState<number | undefined>(undefined);
 
   // Local fallback exams & seed state overrides (used before teacher signs into Google Auth)
   const [localExams, setLocalExams] = useState<ExamDocument[]>(() =>
@@ -290,16 +291,23 @@ export default function App() {
         ) : teacherToken ? (
           <TeacherAdminPanel
             teacherToken={teacherToken}
+            maxChunkBytes={maxUploadChunkBytes}
             firebaseUser={firebaseUser}
             exams={allExams}
             onPublishExam={handlePublishExam}
             onToggleExamActive={handleToggleExamActive}
             onDeleteExam={handleDeleteExam}
-            onLockPanel={() => setTeacherToken(null)}
+            onLockPanel={() => {
+              setTeacherToken(null);
+              setMaxUploadChunkBytes(undefined);
+            }}
           />
         ) : (
           <TeacherPinGate
-            onUnlock={(token) => setTeacherToken(token)}
+            onUnlock={(token, chunkLimit) => {
+              setTeacherToken(token);
+              setMaxUploadChunkBytes(chunkLimit);
+            }}
             onCancel={() => setMode('student')}
           />
         )}
