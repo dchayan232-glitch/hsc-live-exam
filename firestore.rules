@@ -1,0 +1,190 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Zero-DB-read admin check safe for list queries
+    function isBootstrappedAdmin() {
+      return isEmailVerified() && request.auth.token.email == 'dchayan232@gmail.com';
+    }
+
+    // Full admin check for single-document operations
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isEmailVerified() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidSubject(subject) {
+      return subject is string && subject in ['Physics', 'Chemistry', 'Zoology', 'Botany', 'Math', 'ICT'];
+    }
+
+    function isValidQuestionItem(item) {
+      return item is map &&
+        item.keys().hasAll(['id', 'topic', 'difficulty', 'source', 'question', 'options', 'answer', 'explanation']) &&
+        item.keys().hasOnly(['id', 'topic', 'difficulty', 'source', 'question', 'options', 'answer', 'explanation']) &&
+        item.id is int && item.id >= 1 && item.id <= 100 &&
+        item.topic is string && item.topic.size() <= 200 &&
+        item.difficulty is string && item.difficulty.size() <= 40 &&
+        item.source is string && item.source.size() <= 200 &&
+        item.question is string && item.question.size() >= 1 && item.question.size() <= 2000 &&
+        item.options is list && item.options.size() == 4 &&
+        item.options[0] is string && item.options[0].size() <= 500 &&
+        item.options[1] is string && item.options[1].size() <= 500 &&
+        item.options[2] is string && item.options[2].size() <= 500 &&
+        item.options[3] is string && item.options[3].size() <= 500 &&
+        item.answer is int && item.answer >= 0 && item.answer <= 3 &&
+        item.explanation is string && item.explanation.size() <= 3000;
+    }
+
+    function isValidExam(data) {
+      return data.keys().hasAll([
+          'id', 'subject', 'examTitle', 'isActive', 'sourceType',
+          'questionCount', 'questions', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'subject', 'examTitle', 'paper', 'chapter', 'isActive', 'sourceType',
+          'questionCount', 'questions', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidSubject(data.subject) &&
+        data.examTitle is string && data.examTitle.size() >= 2 && data.examTitle.size() <= 200 &&
+        (!('paper' in data) || (data.paper is string && data.paper.size() <= 100)) &&
+        (!('chapter' in data) || (data.chapter is string && data.chapter.size() <= 150)) &&
+        data.isActive is bool &&
+        data.sourceType is string && data.sourceType in ['ai', 'json', 'seed'] &&
+        data.questionCount is int && data.questionCount >= 1 && data.questionCount <= 60 &&
+        data.questions is list && data.questions.size() >= 1 && data.questions.size() <= 60 &&
+        data.questions.size() == data.questionCount &&
+        isValidQuestionItem(data.questions[0]) &&
+        data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidKnowledgeBase(data) {
+      return data.keys().hasAll(['subject', 'storeName', 'displayName', 'documentCount', 'updatedBy', 'updatedAt']) &&
+        data.keys().hasOnly(['subject', 'storeName', 'displayName', 'documentCount', 'updatedBy', 'updatedAt']) &&
+        isValidSubject(data.subject) &&
+        data.storeName is string && data.storeName.size() >= 1 && data.storeName.size() <= 200 &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        data.documentCount is int && data.documentCount >= 0 && data.documentCount <= 100 &&
+        data.updatedBy is string && data.updatedBy == request.auth.uid && data.updatedBy.size() <= 128 &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidAdminDoc(data) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'createdAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        data.createdAt is timestamp;
+    }
+
+    // --- Collection: /exams/{examId} ---
+    match /exams/{examId} {
+      // Students can read only active exams; admins can read all exams
+      allow get: if isValidId(examId) && (existing().isActive == true || isAdmin());
+      allow list: if existing().isActive == true || isBootstrappedAdmin();
+
+      // Only verified teacher admins can create exams
+      allow create: if isEmailVerified() &&
+        isValidId(examId) &&
+        isValidExam(incoming()) &&
+        incoming().id == examId &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      // Action-based update restricted to verified teacher admins with immutable audit fields
+      allow update: if isEmailVerified() &&
+        isValidId(examId) &&
+        isValidExam(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdBy == existing().createdBy &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isAdmin() && (
+          // Action: Toggle Active/Hidden visibility
+          incoming().diff(existing()).affectedKeys().hasOnly(['isActive', 'updatedAt']) ||
+          // Action: Update Exam Metadata & Questions
+          incoming().diff(existing()).affectedKeys().hasOnly(['examTitle', 'paper', 'chapter', 'subject', 'isActive', 'questionCount', 'questions', 'updatedAt'])
+        );
+
+      // Only verified teacher admins can delete exams
+      allow delete: if isEmailVerified() && isValidId(examId) && isAdmin();
+    }
+
+    // --- Collection: /knowledge_bases/{subjectId} ---
+    match /knowledge_bases/{subjectId} {
+      allow get: if isValidId(subjectId) && isAdmin();
+      allow list: if isBootstrappedAdmin();
+
+      allow create: if isEmailVerified() &&
+        isValidId(subjectId) &&
+        isValidKnowledgeBase(incoming()) &&
+        incoming().subject == subjectId &&
+        isAdmin();
+
+      allow update: if isEmailVerified() &&
+        isValidId(subjectId) &&
+        isValidKnowledgeBase(incoming()) &&
+        incoming().subject == existing().subject &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['storeName', 'displayName', 'documentCount', 'updatedBy', 'updatedAt']) &&
+        isAdmin();
+
+      allow delete: if isEmailVerified() && isValidId(subjectId) && isAdmin();
+    }
+
+    // --- Collection: /admins/{uid} ---
+    match /admins/{uid} {
+      // PII isolation: Only the user themselves or an existing admin can read
+      allow get: if isEmailVerified() && isValidId(uid) && (request.auth.uid == uid || isAdmin());
+      allow list: if false;
+
+      allow create: if isEmailVerified() &&
+        isValidId(uid) &&
+        isValidAdminDoc(incoming()) &&
+        incoming().uid == uid &&
+        incoming().createdAt == request.time &&
+        isAdmin();
+
+      allow update: if isEmailVerified() &&
+        isValidId(uid) &&
+        isValidAdminDoc(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email']) &&
+        isAdmin();
+
+      allow delete: if isEmailVerified() && isValidId(uid) && isAdmin();
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "HSC Live MCQ Exam Portal",
+  "description": "Mobile-first Bangla HSC Live MCQ Examination PWA with Firestore persistence, 6 science & ICT subjects, Bonus Time Bank timer, 10-point Bangla report, and Gemini File Search Store AI exam generator.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
